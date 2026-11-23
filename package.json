@@ -1,0 +1,14 @@
+{
+  "name": "bot_discord",
+  "version": "1.0.0",
+  "description": "Discord Bot License",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}
