@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const http = require('http');
 const fs = require('fs');
@@ -7,7 +7,7 @@ const FormData = require('form-data');
 const path = require('path');
 
 // ==========================================
-// PHẦN 1: HTTP SERVER CHO RENDER (GIỮ BOT KHÔNG BỊ NGỦ)
+// PHẦN 1: HTTP SERVER (GIỮ BOT KHÔNG BỊ NGỦ)
 // ==========================================
 const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
@@ -40,12 +40,9 @@ client.once('ready', () => {
 });
 
 function hasPermission(member) {
-    const userHighestRole = member.roles.highest;
-    const botHighestRole = member.guild.members.me.roles.highest;
-    return userHighestRole.position > botHighestRole.position;
+    return member.roles.highest.position > member.guild.members.me.roles.highest.position;
 }
 
-// Hàm lấy Token Admin dùng chung
 async function getAdminToken() {
     const loginRes = await axios.post(`${process.env.SERVER_URL}/api/admin/login`, {
         username: process.env.ADMIN_USER,
@@ -54,7 +51,6 @@ async function getAdminToken() {
     return loginRes.data.token;
 }
 
-// Hàm tạo key
 async function generateKey(days) {
     const adminToken = await getAdminToken();
     const createKeyRes = await axios.post(
@@ -65,15 +61,22 @@ async function generateKey(days) {
     return createKeyRes.data.keys[0];
 }
 
+// Hàm lấy danh sách EXE từ Web
+async function getExeList() {
+    const adminToken = await getAdminToken();
+    const res = await axios.get(`${process.env.SERVER_URL}/api/admin/exe/list`, {
+        headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    return res.data; // Giả định trả về mảng: [{ id: 1, name: 'app.exe' }, ...]
+}
+
 // Xử lý tin nhắn
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // 1. Lệnh gọi Menu tạo key: !key
+    // Lệnh gọi Menu tạo key: !key
     if (message.content === '!key') {
-        if (!hasPermission(message.member)) {
-            return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
-        }
+        if (!hasPermission(message.member)) return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
 
         const embed = new EmbedBuilder()
             .setColor('#c96f3a')
@@ -95,40 +98,27 @@ client.on('messageCreate', async (message) => {
         await message.reply({ embeds: [embed], components: [row] });
     }
 
-    // 2. Lệnh gán EXE vào Key: !gan_exe <KEY> (kèm file đính kèm)
+    // Lệnh upload EXE thủ công (giữ nguyên để dự phòng)
     if (message.content.startsWith('!gan_exe')) {
-        if (!hasPermission(message.member)) {
-            return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
-        }
-
+        if (!hasPermission(message.member)) return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
+        
         const args = message.content.split(' ');
         const keyCode = args[1];
         const attachment = message.attachments.first();
 
-        if (!keyCode) {
-            return message.reply('⚠️ Vui lòng nhập Key. Cú pháp: `!gan_exe <KEY> (kèm file EXE đính kèm)`');
-        }
-        if (!attachment || !attachment.name.endsWith('.exe')) {
-            return message.reply('⚠️ Vui lòng đính kèm file `.exe` cùng tin nhắn.');
-        }
+        if (!keyCode) return message.reply('⚠️ Cú pháp: `!gan_exe <KEY> (kèm file EXE đính kèm)`');
+        if (!attachment || !attachment.name.endsWith('.exe')) return message.reply('⚠️ Vui lòng đính kèm file `.exe`.');
 
         const processingMsg = await message.reply(`⏳ Đang xử lý gán file EXE vào Key \`${keyCode}\`...`);
 
         try {
             const adminToken = await getAdminToken();
-
-            // Tải file từ Discord
             const response = await axios.get(attachment.url, { responseType: 'stream' });
             const tempFilePath = path.join(__dirname, attachment.name);
             const writer = fs.createWriteStream(tempFilePath);
             response.data.pipe(writer);
+            await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
 
-            await new Promise((resolve, reject) => {
-                writer.on('finish', resolve);
-                writer.on('error', reject);
-            });
-
-            // Upload EXE lên Server
             const formData = new FormData();
             formData.append('file', fs.createReadStream(tempFilePath));
             formData.append('name', attachment.name);
@@ -137,40 +127,35 @@ client.on('messageCreate', async (message) => {
                 headers: { ...formData.getHeaders(), Authorization: `Bearer ${adminToken}` }
             });
 
-            const exeId = uploadRes.data.id || uploadRes.data.exeId; // Tùy thuộc API backend trả về
-
-            // Gán EXE vào Key
+            const exeId = uploadRes.data.id || uploadRes.data.exeId;
             await axios.put(`${process.env.SERVER_URL}/api/admin/keys/${keyCode}/assign-exe`, 
                 { exe_id: exeId },
                 { headers: { Authorization: `Bearer ${adminToken}` } }
             );
 
-            // Xóa file tạm
             fs.unlinkSync(tempFilePath);
-
-            await processingMsg.edit(`✅ Đã gán thành công file \`${attachment.name}\` vào Key \`${keyCode}\`.`);
-
+            await processingMsg.edit(`✅ Đã gán file \`${attachment.name}\` vào Key \`${keyCode}\`.`);
         } catch (error) {
-            console.error('Lỗi API Gán EXE:', error.response ? error.response.data : error.message);
-            await processingMsg.edit('❌ Lỗi kết nối tới Server khi gán EXE. Vui lòng kiểm tra lại API Backend.');
+            console.error('Lỗi API:', error.response ? error.response.data : error.message);
+            await processingMsg.edit('❌ Lỗi kết nối tới Server khi gán EXE.');
         }
     }
 });
 
-// Xử lý tương tác Menu
+// Xử lý tương tác
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isStringSelectMenu()) return;
 
+    // 1. Menu chọn thời hạn tạo Key
     if (interaction.customId === 'select_key_duration') {
-        if (!hasPermission(interaction.member)) {
-            return interaction.reply({ content: '❌ Bạn không có quyền làm việc này.', ephemeral: true });
-        }
+        if (!hasPermission(interaction.member)) return interaction.reply({ content: '❌ Bạn không có quyền.', ephemeral: true });
 
         const days = parseInt(interaction.values[0]);
         await interaction.reply({ content: `⏳ Đang tạo Key ${days} ngày...`, ephemeral: true });
 
         try {
             const newKey = await generateKey(days);
+            const exeList = await getExeList(); // Lấy danh sách EXE
 
             const resultEmbed = new EmbedBuilder()
                 .setColor('#7a9a4a')
@@ -183,12 +168,58 @@ client.on('interactionCreate', async (interaction) => {
                 )
                 .setTimestamp();
 
-            await interaction.channel.send({ embeds: [resultEmbed] });
+            const components = [];
+
+            // Nếu có EXE trên Web thì tạo menu chọn
+            if (exeList && exeList.length > 0) {
+                const exeMenu = new StringSelectMenuBuilder()
+                    .setCustomId(`assign_exe_${newKey}`) // Gắn Key vào ID để biết gán cho key nào
+                    .setPlaceholder('Chọn file EXE để gán vào Key này...')
+                    .addOptions(
+                        exeList.slice(0, 25).map(exe => // Discord giới hạn 25 option
+                            new StringSelectMenuOptionBuilder()
+                                .setLabel(exe.name)
+                                .setValue(exe.id.toString())
+                        )
+                    );
+                components.push(new ActionRowBuilder().addComponents(exeMenu));
+            } else {
+                resultEmbed.addFields({ name: 'Lưu ý', value: 'Không tìm thấy file EXE nào trên Web để gán.' });
+            }
+
+            await interaction.channel.send({ embeds: [resultEmbed], components: components });
             await interaction.message.delete();
 
         } catch (error) {
             console.error('Lỗi API:', error.response ? error.response.data : error.message);
             await interaction.followUp({ content: '❌ Lỗi kết nối tới Server.', ephemeral: true });
+        }
+    }
+
+    // 2. Menu chọn EXE để gán sau khi tạo Key
+    if (interaction.customId.startsWith('assign_exe_')) {
+        if (!hasPermission(interaction.member)) return interaction.reply({ content: '❌ Bạn không có quyền.', ephemeral: true });
+
+        const keyCode = interaction.customId.replace('assign_exe_', '');
+        const exeId = interaction.values[0];
+
+        await interaction.reply({ content: `⏳ Đang gán EXE vào Key \`${keyCode}\`...`, ephemeral: true });
+
+        try {
+            const adminToken = await getAdminToken();
+            await axios.put(`${process.env.SERVER_URL}/api/admin/keys/${keyCode}/assign-exe`, 
+                { exe_id: exeId },
+                { headers: { Authorization: `Bearer ${adminToken}` } }
+            );
+
+            await interaction.editReply({ content: `✅ Đã gán thành công EXE vào Key \`${keyCode}\`!` });
+            
+            // Xóa menu sau khi gán xong để tránh bấm nhầm
+            await interaction.message.edit({ components: [] });
+
+        } catch (error) {
+            console.error('Lỗi API Gán EXE:', error.response ? error.response.data : error.message);
+            await interaction.editReply({ content: '❌ Lỗi kết nối tới Server khi gán EXE.' });
         }
     }
 });
