@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require('discord.js');
 const axios = require('axios');
 const http = require('http');
 const fs = require('fs');
@@ -35,6 +35,9 @@ const client = new Client({
     ]
 });
 
+// ĐƯỜNG DẪN API LẤY DANH SÁCH EXE (Sửa lại cho khớp với Backend của bạn)
+const API_EXE_LIST_PATH = process.env.API_EXE_LIST_PATH || '/api/admin/exe/list';
+
 client.once('ready', () => {
     console.log(`[Bot] Đã đăng nhập thành công dưới tên ${client.user.tag}!`);
 });
@@ -61,20 +64,23 @@ async function generateKey(days) {
     return createKeyRes.data.keys[0];
 }
 
-// Hàm lấy danh sách EXE từ Web
+// Hàm lấy danh sách EXE từ Web (Đã bọc try-catch an toàn)
 async function getExeList() {
-    const adminToken = await getAdminToken();
-    const res = await axios.get(`${process.env.SERVER_URL}/api/admin/exe/list`, {
-        headers: { Authorization: `Bearer ${adminToken}` }
-    });
-    return res.data; // Giả định trả về mảng: [{ id: 1, name: 'app.exe' }, ...]
+    try {
+        const adminToken = await getAdminToken();
+        const res = await axios.get(`${process.env.SERVER_URL}${API_EXE_LIST_PATH}`, {
+            headers: { Authorization: `Bearer ${adminToken}` }
+        });
+        return res.data; // Trả về mảng: [{ id: 1, name: 'app.exe' }, ...]
+    } catch (error) {
+        console.error('[CẢNH BÁO] Không thể lấy danh sách EXE từ Web. Kiểm tra lại API_EXE_LIST_PATH trong file .env hoặc code Backend.');
+        return []; // Trả về mảng rỗng để bot không bị crash
+    }
 }
 
-// Xử lý tin nhắn
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // Lệnh gọi Menu tạo key: !key
     if (message.content === '!key') {
         if (!hasPermission(message.member)) return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
 
@@ -98,7 +104,6 @@ client.on('messageCreate', async (message) => {
         await message.reply({ embeds: [embed], components: [row] });
     }
 
-    // Lệnh upload EXE thủ công (giữ nguyên để dự phòng)
     if (message.content.startsWith('!gan_exe')) {
         if (!hasPermission(message.member)) return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
         
@@ -142,11 +147,9 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Xử lý tương tác
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isStringSelectMenu()) return;
 
-    // 1. Menu chọn thời hạn tạo Key
     if (interaction.customId === 'select_key_duration') {
         if (!hasPermission(interaction.member)) return interaction.reply({ content: '❌ Bạn không có quyền.', ephemeral: true });
 
@@ -155,7 +158,7 @@ client.on('interactionCreate', async (interaction) => {
 
         try {
             const newKey = await generateKey(days);
-            const exeList = await getExeList(); // Lấy danh sách EXE
+            const exeList = await getExeList();
 
             const resultEmbed = new EmbedBuilder()
                 .setColor('#7a9a4a')
@@ -170,21 +173,21 @@ client.on('interactionCreate', async (interaction) => {
 
             const components = [];
 
-            // Nếu có EXE trên Web thì tạo menu chọn
+            // Nếu lấy được danh sách EXE thì tạo menu, không thì báo lỗi nhẹ nhàng
             if (exeList && exeList.length > 0) {
                 const exeMenu = new StringSelectMenuBuilder()
-                    .setCustomId(`assign_exe_${newKey}`) // Gắn Key vào ID để biết gán cho key nào
+                    .setCustomId(`assign_exe_${newKey}`)
                     .setPlaceholder('Chọn file EXE để gán vào Key này...')
                     .addOptions(
-                        exeList.slice(0, 25).map(exe => // Discord giới hạn 25 option
+                        exeList.slice(0, 25).map(exe => 
                             new StringSelectMenuOptionBuilder()
-                                .setLabel(exe.name)
+                                .setLabel(exe.name || exe.ten_file || `File ID: ${exe.id}`)
                                 .setValue(exe.id.toString())
                         )
                     );
                 components.push(new ActionRowBuilder().addComponents(exeMenu));
             } else {
-                resultEmbed.addFields({ name: 'Lưu ý', value: 'Không tìm thấy file EXE nào trên Web để gán.' });
+                resultEmbed.addFields({ name: '⚠️ Lưu ý', value: 'Không thể lấy danh sách EXE từ Web (Hoặc Web đang trống). Hãy kiểm tra lại API Backend.' });
             }
 
             await interaction.channel.send({ embeds: [resultEmbed], components: components });
@@ -196,7 +199,6 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // 2. Menu chọn EXE để gán sau khi tạo Key
     if (interaction.customId.startsWith('assign_exe_')) {
         if (!hasPermission(interaction.member)) return interaction.reply({ content: '❌ Bạn không có quyền.', ephemeral: true });
 
@@ -213,8 +215,6 @@ client.on('interactionCreate', async (interaction) => {
             );
 
             await interaction.editReply({ content: `✅ Đã gán thành công EXE vào Key \`${keyCode}\`!` });
-            
-            // Xóa menu sau khi gán xong để tránh bấm nhầm
             await interaction.message.edit({ components: [] });
 
         } catch (error) {
