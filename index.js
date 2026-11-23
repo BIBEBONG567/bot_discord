@@ -6,9 +6,6 @@ const fs = require('fs');
 const FormData = require('form-data');
 const path = require('path');
 
-// ==========================================
-// PHẦN 1: HTTP SERVER (GIỮ BOT KHÔNG BỊ NGỦ)
-// ==========================================
 const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
     if (req.url === '/health') {
@@ -24,19 +21,11 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Health Server] Đang chạy trên cổng ${PORT}`);
 });
 
-// ==========================================
-// PHẦN 2: CẤU HÌNH DISCORD BOT
-// ==========================================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// ĐƯỜNG DẪN API LẤY DANH SÁCH EXE (Sửa lại cho khớp với Backend của bạn)
-const API_EXE_LIST_PATH = process.env.API_EXE_LIST_PATH || '/api/admin/exe/list';
+const API_EXE_LIST_PATH = process.env.API_EXE_LIST_PATH || '/api/admin/payloads'; // Đã đổi thành path mới
 
 client.once('ready', () => {
     console.log(`[Bot] Đã đăng nhập thành công dưới tên ${client.user.tag}!`);
@@ -64,17 +53,16 @@ async function generateKey(days) {
     return createKeyRes.data.keys[0];
 }
 
-// Hàm lấy danh sách EXE từ Web (Đã bọc try-catch an toàn)
 async function getExeList() {
     try {
         const adminToken = await getAdminToken();
         const res = await axios.get(`${process.env.SERVER_URL}${API_EXE_LIST_PATH}`, {
             headers: { Authorization: `Bearer ${adminToken}` }
         });
-        return res.data; // Trả về mảng: [{ id: 1, name: 'app.exe' }, ...]
+        return res.data;
     } catch (error) {
-        console.error('[CẢNH BÁO] Không thể lấy danh sách EXE từ Web. Kiểm tra lại API_EXE_LIST_PATH trong file .env hoặc code Backend.');
-        return []; // Trả về mảng rỗng để bot không bị crash
+        console.error('[CẢNH BÁO] Không thể lấy danh sách EXE. Kiểm tra lại API.');
+        return []; 
     }
 }
 
@@ -102,48 +90,6 @@ client.on('messageCreate', async (message) => {
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
         await message.reply({ embeds: [embed], components: [row] });
-    }
-
-    if (message.content.startsWith('!gan_exe')) {
-        if (!hasPermission(message.member)) return message.reply('❌ Bạn không có quyền sử dụng lệnh này.');
-        
-        const args = message.content.split(' ');
-        const keyCode = args[1];
-        const attachment = message.attachments.first();
-
-        if (!keyCode) return message.reply('⚠️ Cú pháp: `!gan_exe <KEY> (kèm file EXE đính kèm)`');
-        if (!attachment || !attachment.name.endsWith('.exe')) return message.reply('⚠️ Vui lòng đính kèm file `.exe`.');
-
-        const processingMsg = await message.reply(`⏳ Đang xử lý gán file EXE vào Key \`${keyCode}\`...`);
-
-        try {
-            const adminToken = await getAdminToken();
-            const response = await axios.get(attachment.url, { responseType: 'stream' });
-            const tempFilePath = path.join(__dirname, attachment.name);
-            const writer = fs.createWriteStream(tempFilePath);
-            response.data.pipe(writer);
-            await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
-
-            const formData = new FormData();
-            formData.append('file', fs.createReadStream(tempFilePath));
-            formData.append('name', attachment.name);
-
-            const uploadRes = await axios.post(`${process.env.SERVER_URL}/api/admin/exe/upload`, formData, {
-                headers: { ...formData.getHeaders(), Authorization: `Bearer ${adminToken}` }
-            });
-
-            const exeId = uploadRes.data.id || uploadRes.data.exeId;
-            await axios.put(`${process.env.SERVER_URL}/api/admin/keys/${keyCode}/assign-exe`, 
-                { exe_id: exeId },
-                { headers: { Authorization: `Bearer ${adminToken}` } }
-            );
-
-            fs.unlinkSync(tempFilePath);
-            await processingMsg.edit(`✅ Đã gán file \`${attachment.name}\` vào Key \`${keyCode}\`.`);
-        } catch (error) {
-            console.error('Lỗi API:', error.response ? error.response.data : error.message);
-            await processingMsg.edit('❌ Lỗi kết nối tới Server khi gán EXE.');
-        }
     }
 });
 
@@ -173,7 +119,6 @@ client.on('interactionCreate', async (interaction) => {
 
             const components = [];
 
-            // Nếu lấy được danh sách EXE thì tạo menu, không thì báo lỗi nhẹ nhàng
             if (exeList && exeList.length > 0) {
                 const exeMenu = new StringSelectMenuBuilder()
                     .setCustomId(`assign_exe_${newKey}`)
@@ -187,7 +132,7 @@ client.on('interactionCreate', async (interaction) => {
                     );
                 components.push(new ActionRowBuilder().addComponents(exeMenu));
             } else {
-                resultEmbed.addFields({ name: '⚠️ Lưu ý', value: 'Không thể lấy danh sách EXE từ Web (Hoặc Web đang trống). Hãy kiểm tra lại API Backend.' });
+                resultEmbed.addFields({ name: '⚠️ Lưu ý', value: 'Không thể lấy danh sách EXE từ Web.' });
             }
 
             await interaction.channel.send({ embeds: [resultEmbed], components: components });
@@ -209,7 +154,8 @@ client.on('interactionCreate', async (interaction) => {
 
         try {
             const adminToken = await getAdminToken();
-            await axios.put(`${process.env.SERVER_URL}/api/admin/keys/${keyCode}/assign-exe`, 
+            // Đã đổi thành axios.post để khớp với Backend
+            await axios.post(`${process.env.SERVER_URL}/api/admin/keys/${keyCode}/assign-exe`, 
                 { exe_id: exeId },
                 { headers: { Authorization: `Bearer ${adminToken}` } }
             );
